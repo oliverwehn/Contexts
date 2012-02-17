@@ -1,0 +1,541 @@
+<?php
+/**
+ * ProcessWire Module ProcessContexts
+ *
+ * Sets up contexts to help managing multiple sites within the structure of a single PW installation.
+ * 
+ * For more details about how Process modules work, please see: 
+ * /wire/core/Process.php 
+ * 
+ * ProcessWire 2.x 
+ * Copyright (C) 2011 by Oliver Wehn 
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ * 
+ * http://www.processwire.com
+ * http://www.oliverwehn.com
+ *
+ */
+
+class ProcessContexts extends Process {
+    
+/******
+ ***** Change before installation
+ *****/    
+    var $template_name = "context";
+	
+/******
+ ***** Don’t change
+ *****/    
+    var $hooks = array(
+        );
+
+    public static function getModuleInfo() {
+        return array(
+            'title' => ProcessContexts::_('Contexts'),
+            'summary' => ProcessContexts::_('Manage multiple contexts within one ProcessWire.'),
+            'href' => 'http://processwire.com/talk/index.php/topic,414.0.html',
+            'version' => 008,
+            'permanent' => false,
+            'autoload' => true,
+            'singular' => true
+        );
+    }
+
+
+/******
+ ***** Initialization
+ ***** of class and template var
+ *****/
+    /**
+     * Module init
+     *
+     */
+    public function init() {
+        parent::init();     
+        
+        // sets hook for catching calls on '/' and leading them to default languageâs home page
+        //$this->hooks['setLanguage'] = $this->addHookBefore('Page::render', $this, 'setLanguage');
+   
+        // sets hook for handling error pages
+        //$this->hooks['getErrorPage'] = $this->addHookBefore('ProcessPageView::execute', $this, 'setErrorPage');
+    }
+     
+    
+    /**
+     * set template var
+     *
+     */ 
+    private function _setTemplateVar($page) {
+        if((is_object($page)) && ($lang_id = $this->hasLanguage($page)) && ($lang = $this->getLanguage($lang_id))) {
+            $var = new stdClass();
+            $var->current = new stdClass();
+            $var->current->id = $lang['id'];
+            $var->current->language = $lang['language'];
+            $var->current->code = $lang['code'];
+            $var->current->home = $this->pages->get($lang['home']);
+            $var->translations = $this->getTranslations($page, true, true); 
+            return $var; 
+        } else {
+            return false;
+        }       
+    }
+
+/******
+ ***** Admin interface
+ *****
+ *****/
+
+    /**
+     * Module execution
+     *
+     */
+    public function ___execute() {
+        $this->setFuel('processHeadline', $this->_('Contexts'));
+
+        $description = "";
+
+        $table = $this->modules->get("MarkupAdminDataTable");
+        $table->setEncodeEntities(false);
+        $table->headerRow(array($this->_('Context'), $this->_('Default'), $this->_('Pages'), $this->_('Delete')));
+
+        $contexts = $this->pages->find("parent=/,template=".$this->template_name);
+		$context_tree = $this->modules->get('ProcessPageList'); 
+		$context_tree->set('showRootPage', true);
+
+        foreach($contexts as $c) {
+			//$context_tree = $c->children;
+        	
+			$context_tree->set('id', $c->id);
+			$context_tree->fuel('config')->js('ProcessPageList', array('containerID' => 'PageListContainer'.$c->id));
+			$table->row(array(
+                 //($context_tree instanceof PageArray)?$context_tree->render():"Nö",
+                 $context_tree->execute(),
+                 $c->get('context-default')?$this->_("yes"):$this->_("no"),
+				 count($c->children()),
+                 "<input type='checkbox' name='delete[{$c->id}]' value='1'".($c->get('context-default')?" disabled='disabled'":"")." />"
+                 ));
+        }
+	        $table->headerRow(array($this->_('Context'), $this->_('Default'), $this->_('Pages'), $this->_('Delete')));
+
+        $contexts = $this->pages->find("template=".$this->template_name);
+
+        $button = $this->modules->get("InputfieldButton");
+        $button->type = 'submit';
+        $button->id = 'submit_delete';
+        $button->value = $this->_('Remove selected context');
+
+        $table->action(array($this->_('Create new context') => 'edit/?id=0'));
+
+        // Is there clean way to add button to right side?
+        return $description . "<form id='contexts_form' action='./delete/' method='post'>" .$table->render() . $button->render() . "</form>";
+    }
+    
+    
+    /**
+     * Edit/Add language - Called when the URL is: ./edit/
+     *
+     */
+    public function ___executeEdit() {
+
+        $this->fuel->breadcrumbs->add(new Breadcrumb("../", $this->_("Contexts")));
+
+        $id = (int) $this->input->get->id;
+
+        // add new record
+        $id = 0;
+        $default = 0;
+        $name = "";
+        $title = $this->_("New context");
+		$language = "";
+		$language_code = "";
+        $this->setFuel('processHeadline', $this->_("New context"));
+
+        $form = $this->modules->get("InputfieldForm");
+        $form->method = 'post';
+        $form->action = '../save/';
+
+        $field = $this->modules->get("InputfieldHidden");
+        $field->name = 'id';
+        $field->value = $id;
+        $form->add($field);
+
+        $field = $this->modules->get("InputfieldText");
+        $field->label = $this->_("Title");
+        $field->name = 'title';
+        $field->value = $title;
+        $form->add($field);
+        
+        $field = $this->modules->get("InputfieldCheckbox");
+        $field->label = $this->_("Default");
+        $field->description = $this->_("Is this context to be used by default?");
+        $field->name = 'default';
+        $field->value = 1;
+        if($default) {
+         $field->attr('checked', 'checked');
+         $field->attr('disabled', 'disabled'); 
+        } else {
+         $field->attr('onClick', "if($('#Inputfield_default').prop('checked')) { $('#Inputfield_sync').prop('checked', false).prop('disabled', true); } else {  $('#Inputfield_sync').prop('disabled', false); }");
+        }
+        $form->add($field);     
+        
+        $field = $this->modules->get("InputfieldButton");
+        $field->type = 'submit';
+        $field->value = $this->_("Add new context");
+
+        $form->add($field);
+
+        return $form->render();
+    }   
+
+
+    /**
+     * Save language - Called when the URL is ./save/
+     *
+     */
+    public function ___executeSave() {
+
+
+        $title = $this->input->post->title;
+        $default = ($this->input->post->default)?$this->input->post->default:0;
+
+        if ($title == '') {
+            $this->error($this->_("No context created, please check your values."));
+            $this->session->redirect("../"); // back to list
+        } else {
+        	$context = new Page($this->templates->get($this->template_name));
+        	$context->set('title', $title);
+			$context->set('name', $this->fuel('sanitizer')->pageName($title));
+			$context->set('default', $default);
+			$context->parent = $this->pages->get("/");
+			$context->save();
+			$id = $context->id;
+	        $this->message($this->_("Saved context named \"$title\" with ID \"$id\"."));
+	        $this->session->redirect(".."); // back to list
+	   	}
+    }
+
+
+    /**
+     * Delete language - Called when the URL is ./save/
+     *
+     */
+    public function ___executeDelete() {
+
+        $count = 0;
+        
+        if(!is_array($this->input->post->delete) || empty($this->input->post->delete)) {
+            $this->message("Nothing to delete");
+            $this->session->redirect("../"); // back to list
+        }
+       
+        
+        $form = $this->modules->get("InputfieldForm"); 
+        $form->attr('action', '../delete/'); 
+        $form->attr('method', 'post'); 
+        
+        $field = $this->modules->get("InputfieldHidden");
+        $field->attr("name", "confirm");
+        $field->attr("value", 1);
+        $form->add($field);
+
+        foreach($this->input->post->delete as $id=>$delmode) {
+            $sql = "SELECT `language`, `home` FROM {$this->table_name} WHERE `id` = {$id}";
+            $result = $this->db->query($sql);
+            if($row_lang = $result->fetch_assoc()) {
+                if($delmode == 1) {
+                    $id = (int) $id;
+                    $field = $this->modules->get("InputfieldSelect"); 
+                    $field_name = "delete[{$id}]";
+                    $field->label = $row_lang['language']; 
+                    $field->attr("id+name", $field_name); 
+                    $field->addOption(0, "Deal with languageâs pages...");
+                    $field->addOption("delete", "- delete languageâs page tree");
+                    $field->addOption("unlock", "- just keep and unlock languageâs page tree");
+                    
+                    $form->add($field);
+                    $count++;                   
+                } else {
+                    if($this->_deleteLanguage($id, $delmode)) {
+                      $count++;
+                    }
+                }
+            }
+        }
+        $form->description = "Delete {$count} language(s).";
+        if($this->input->post->confirm) {
+            $this->message("Deleted " . $count . " language(s).");
+            $this->session->redirect("../"); // back to list            
+        } else {
+            $button = $this->modules->get("InputfieldButton");
+            $button->type = 'submit';
+            $button->id = 'confirm_delete';
+            $button->value = 'Confirm';
+            $form->add($button);
+            return $form->render();
+        }
+    }
+
+
+    /**
+     * Adds the language tab to the page edit form
+     * 
+     */     
+    private function _extendForm($form, $page, $currLang=null) {
+        // if languageâs homepage, lock template field
+        if($page->parents->path == "/") {
+            $settings = $form->children('id=template');
+            current(current($settings))->attr('disabled', 'disabled');
+        }
+        // first we have to find and remove the delete link, temporarly
+        if($delete = $form->children('id=ProcessPageEditDelete')->first()) {
+            $form->remove($delete);            
+        }
+        // after that we have to find and remove the view link, also temporarily
+        if($view = $form->children('id=ProcessPageEditView')->first()) {
+            $form->remove($view);
+        }
+
+        // create the tab
+        $tab = new InputfieldWrapper();
+        $tab->attr('id', 'tabLanguages'); 
+        $tab->attr('title', 'Languages');
+
+        // get associated language versions of current page
+        $sql = "
+        SELECT `language`, `page`, `group` FROM {$this->table_name}_pagemap
+        WHERE `group` = (
+            SELECT `group` FROM {$this->table_name}_pagemap 
+            WHERE `language` = {$currLang}
+            AND `page` = {$page->id}
+            )
+        ";
+        $res_pmap = $this->db->query($sql);
+
+        // set group = 0 by default
+        $group = 0;
+        
+        // store all associated pages
+        $pagemap = array();
+        while($map = $res_pmap->fetch_assoc()) {
+            $pagemap[$map['language']] = $map['page'];
+            if($group == 0) {
+               $group = $map['group'];
+            }
+        }
+
+        // now list our languages
+        $sql = "SELECT `id`, `language`, `code` FROM {$this->table_name} ORDER BY `language`";
+        $res_lang = $this->db->query($sql);
+        $translation = array();
+        $cntLang = 0;
+        while($l = $res_lang->fetch_assoc()) {
+            if($l['id'] !== $currLang) {
+                $cntLang++;           
+                // for each language not the current, create a language field
+                $field = $this->modules->get("InputfieldMarkup"); 
+                $field->label = $l['language'];
+                $field->attr('id', 'language-'.$l['language']);
+
+                if(array_key_exists($l['id'], $pagemap)) {
+                    // if there is another language version associated with this page, do:
+                    $trans_page = $this->pages->get($pagemap[$l['id']]);
+                    $field->value = "\n<ul class='PageArray'>";
+                    $field->value .= "\n\t<li><a href='../edit/?id={$trans_page->id}'>{$trans_page->title}</a></li>";
+                    $field->value .= "\n</ul>";
+                  
+                } else {
+                    // if not, do:
+                    // get parent of current page
+                    $parent = $page->parent();
+                    // check if there is a translation of parent
+                    $sql = "
+                      SELECT `id`, `page`, `group` FROM {$this->table_name}_pagemap 
+                      WHERE `language` = '{$l['id']}'
+                      AND `group` = (
+                          SELECT `group` FROM {$this->table_name}_pagemap
+                          WHERE `page` = {$parent->id}
+                          )
+                    ";
+                    $res_parent = $this->db->query($sql);
+                    if($res_parent->num_rows) {
+                      
+                        // get translated parentâs data
+                        $row_parent = $res_parent->fetch_assoc();
+                        $translation[$l['id']] = $this->modules->get("InputfieldSelect"); 
+                        $field_id = "CreateTranslation_".$l['id'];
+                        $translation[$l['id']]->attr("id+name", $field_id); 
+                        $translation[$l['id']]->addOption(0, "Create a translation...");
+                        $translation[$l['id']]->addOption("clone", "- by cloning current page");
+                        $translation[$l['id']]->addOption("new", "- by creating an new empty page");
+                        //$translation[$l['id']]->attr("onChange", "document.getElementById('ProcessPageEdit').submit()");
+                        
+                        $field->value = $translation[$l['id']]->render();
+                        
+                        // since this isn't technically part of the page's fields, we have to
+                        // handle any input submitting to the field if we want it.
+                        if($this->input->post->$field_id !== null) {
+                            // how to create the translation page
+                            $translation[$l['id']]->processInput($this->input->post); 
+                            $value = $translation[$l['id']]->attr('value');
+                            // parentâs translation
+                            $trans_parent = $this->pages->get($row_parent['page']);
+                            if($trans_parent->id) {
+                                if($value == "clone") {
+                                     if($trans_page = $this->_copyPage($page, $trans_parent, $l['id'], false)) {
+                                         // has anything to happen here?
+                                     }
+                                } elseif($value == "new") {
+                                     $trans_page = new Page($page->template);
+                                     $trans_page->parent = $trans_parent;
+                                     $trans_page->title = $this->translation_prefix.$page->title;
+                                     $trans_page->save();
+                                     $this->_mapPage($trans_page, $group, $l['id'], true);
+                                }
+                            }
+                        } else {
+                            // retrieve the value from the session var.
+                            $field->attr('value', $this->session->fieldExample2);
+                        }
+                        
+                    } else {
+                        // parent wasnât found
+                        $field->value = "There is no translation of the current pageâs parent."; 
+                    }
+                }
+                // add the field to the tab
+                $tab->add($field);
+            }
+        }
+
+        if($cntLang == 0) {
+              $field = $this->modules->get("InputfieldMarkup"); 
+              $field->label = "Start translating now!";
+              $field->value = "<a href=\"../../setup/languages/\">Manage Languages</a>";
+              $tab->add($field);
+        }
+
+        // add the tab to the form
+        $form->add($tab);
+
+        // now add that delete and view link back to the form at the end  
+        if($delete) {
+            $form->add($delete);
+        }
+        if($view) {
+            $form->add($view);
+        }
+    }   
+    
+    
+/******
+ ***** hooking methods
+ ***** 
+ *****/
+
+ 
+/******
+ ***** Install/Uninstall
+ ***** 
+ *****/ 
+
+    /**
+     * Installation
+     *
+     */
+    public function ___install() {
+        parent::___install();
+
+        // create admin page
+        $p = new Page();
+        $p->template = $this->templates->get("admin");
+        $p->parent = $this->pages->get("template=admin, name=setup");
+        $p->title = 'Contexts';
+        $p->name = 'contexts';
+        $p->process = $this;
+        $p->save();
+        
+        // create context template
+        $template = new Template();
+		$template->name = $this->template_name;
+		// create field group
+		$fieldgroup = new Fieldgroup(); 
+		$fieldgroup->name = $template->name;
+		// add field for context name
+		$field = $this->fields->get('title');
+		$fieldgroup->add($field);
+		// add field for language information
+		$field = new Field();
+		$field->set('name', "context-language");
+		$field->set('label', "Context’s language");
+		$field->set('type', "FieldtypeText");
+		$field->save();
+		$fieldgroup->add($field);
+		$field = new Field();
+		$field->set('name', "context-language-code");
+		$field->set('label', "Context’s language code");
+		$field->set('description', "eg. en-US");
+		$field->set('type', "FieldtypeText");		
+		$field->save();
+		$fieldgroup->add($field);
+		// add field for setting context as default
+		//$field = new FieldtypeInteger();
+		//$field
+		// add field for URL specification
+		$field = new Field();
+		$field->set('name', "context-url-match");
+		$field->set('label', "URL pattern");
+		$field->set('description', "The pattern the URL has to match against to select this context.");
+		$field->set('type', "FieldtypeText");		
+		$field->save();
+		$fieldgroup->add($field);
+		// save and add fieldgroup 
+		$fieldgroup->save();
+		$template->fieldgroup = $fieldgroup;
+		// set roles and save template 
+		$template->roles = array($this->roles->getGuestRole()->id); 
+		$template->save();
+		// copy template file to template dir
+		if(file_exists($this->config->paths->ProcessContexts."context.php")) {
+			copy($this->config->paths->ProcessContexts."context.php", $this->config->paths->templates.$this->template_name.".php");
+		} 
+        
+        // create first context
+        $context = new Page($template);
+        $context->parent = $this->pages->get("/");
+        $context->set('title', "Web");
+        $context->set('name', "web");
+		$context->set('context-language', "English");
+		$context->set('context-language-code', "en-US");
+		$context->set('context-url-match', $_SERVER['SERVER_NAME']);
+        $context->save();       
+    }
+
+
+    /**
+     * Uninstallation
+     *
+     */
+    public function ___uninstall() {
+        $p = $this->pages->get('template=admin, name=languages');
+        $p->delete();
+        // Here the language home template has to be replaced or at least unlocked.
+        // Transform home template into normal template and rename it, to avoid conflicts on reinstallation
+    
+        $this->db->query("DROP TABLE {$this->table_name}");
+        $this->db->query("DROP TABLE {$this->table_name}_pagemap");     
+        parent::___uninstall();
+    }
+}
+
+class PagesContext extends Page {
+	
+	
+	
+	function __construct($id) {
+		
+	}	
+		
+}
+
+
+?>
